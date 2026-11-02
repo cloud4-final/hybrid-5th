@@ -1,3 +1,6 @@
+## Related Issue
+Closes #
+
 ## 변경 목적
 
 변경이 필요한 이유를 적어 주세요.
