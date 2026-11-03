@@ -35,5 +35,5 @@ resource "aws_security_group" "edge" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "jammy-edge-sg" }
+  tags = { Name = "jammy-edge-sg", Component = "edge" }
 }

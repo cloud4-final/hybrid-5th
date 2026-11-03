@@ -24,3 +24,18 @@ resource "aws_iam_instance_profile" "edge" {
   name = "jammy-edge-profile"
   role = aws_iam_role.edge.name
 }
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role_policy" "edge_read_tskey" {
+  name = "read-tailscale-authkey"
+  role = aws_iam_role.edge.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/jammy/tailscale/edge-authkey"
+    }]
+  })
+}

@@ -10,12 +10,12 @@ resource "aws_vpc" "main" {
   cidr_block           = "10.200.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true # EC2에 DNS 이름 부여 (SSM 접속 등에 필요)
-  tags                 = { Name = "jammy-vpc" }
+  tags                 = { Name = "jammy-vpc", Component = "network" }
 }
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
-  tags   = { Name = "jammy-igw" }
+  tags   = { Name = "jammy-igw", Component = "network" }
 }
 
 resource "aws_subnet" "public" {
@@ -23,7 +23,7 @@ resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = each.value
   availability_zone = "ap-northeast-2${each.key}"
-  tags              = { Name = "jammy-public-${each.key}" }
+  tags              = { Name = "jammy-public-${each.key}", Component = "network" }
 }
 
 resource "aws_route_table" "public" {
@@ -34,7 +34,7 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id # 정문(IGW)으로
   }
 
-  tags = { Name = "jammy-public-rt" }
+  tags = { Name = "jammy-public-rt", Component = "network" }
 }
 
 resource "aws_route_table_association" "public" {
