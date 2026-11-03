@@ -1,41 +1,63 @@
-# 최신 Ubuntu 24.04 이미지 자동 선택 (거점과 같은 OS)
+# 우분투 24.04 최신 이미지
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical 공식 계정
+  owners      = ["099720109477"] # Canonical (우분투 공식 계정)
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
 }
 
-resource "aws_instance" "edge_a" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = "t3.micro"
-  subnet_id                   = aws_subnet.public["a"].id
-  vpc_security_group_ids      = [aws_security_group.edge.id]       # 도어락
-  iam_instance_profile        = aws_iam_instance_profile.edge.name # SSM 출입증
-  user_data                   = file("${path.module}/userdata/edge.sh")
+# 입구 서버 목록: 서브넷 이름과 같게
+locals {
+  edges = toset(["a", "c"])
+}
+
+resource "aws_instance" "edge" {
+  for_each = local.edges # 목록 개수만큼 찍어 냄
+
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.public[each.key].id # a는 서브넷 a, c는 서브넷 c
+  vpc_security_group_ids = [aws_security_group.edge.id]
+  iam_instance_profile   = aws_iam_instance_profile.edge.name
+
+  # 템플릿 빈칸 채우기
+  user_data = templatefile("${path.module}/userdata/edge.sh.tftpl", {
+    hostname = "jammy-edge-${each.key}"
+    ts_param = "/jammy/tailscale/edge-authkey-${each.key}"
+  })
   user_data_replace_on_change = true
 
   credit_specification {
-    cpu_credits = "standard" # CPU 초과 사용 시 추가 요금 방지
+    cpu_credits = "standard" # 크레딧 초과 과금 방지
   }
 
   root_block_device {
-    encrypted = true # 디스크 암호화 (무료)
-    tags      = { Name = "jammy-edge-a-root", Component = "edge" }
+    encrypted = true
+    tags      = { Name = "jammy-edge-${each.key}-root", Component = "edge" }
   }
 
   metadata_options {
-    http_tokens = "required" # IMDSv2: 서버 내부 정보 탈취 방지
+    http_tokens = "required" # IMDSv2 강제
   }
 
-  tags = { Name = "jammy-edge-a", Component = "edge" }
+  tags = { Name = "jammy-edge-${each.key}", Component = "edge" }
 }
 
-# 고정 공인 IP
-resource "aws_eip" "edge_a" {
-  instance = aws_instance.edge_a.id
+resource "aws_eip" "edge" {
+  for_each = local.edges
   domain   = "vpc"
-  tags     = { Name = "jammy-edge-a-eip", Component = "edge" }
+  instance = aws_instance.edge[each.key].id
+  tags     = { Name = "jammy-edge-${each.key}-eip", Component = "edge" }
+}
+
+# 이름표만 바뀜: 기존 edge_a / EIP를 새 주소로 옮김 (EIP 유지)
+moved {
+  from = aws_instance.edge_a
+  to   = aws_instance.edge["a"]
+}
+moved {
+  from = aws_eip.edge_a
+  to   = aws_eip.edge["a"]
 }
