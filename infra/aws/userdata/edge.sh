@@ -3,19 +3,44 @@ set -euxo pipefail
 apt-get update
 apt-get install -y haproxy nginx
 
-# nginx는 임시 목적지라 8080으로 이동 (80은 HAProxy가 사용)
+# 점검 페이지(nginx)는 8080, 80은 HAProxy가 사용
 sed -i 's/listen 80 default_server;/listen 8080 default_server;/; s/listen \[::\]:80 default_server;/listen [::]:8080 default_server;/' /etc/nginx/sites-available/default
-echo "jammy edge-a: temp backend" > /var/www/html/index.html
+echo "jammy: 점검 중입니다 (all sites down)" > /var/www/html/index.html
 systemctl restart nginx
 
-# HAProxy: 80으로 받아서 nginx(8080)로 전달
 cat >> /etc/haproxy/haproxy.cfg <<'CFG'
 
 frontend web
     bind *:80
-    default_backend temp
+    default_backend sites
 
-backend temp
-    server local 127.0.0.1:8080 check
+backend sites
+    balance roundrobin
+    option httpchk GET /
+    default-server inter 3s fall 3 rise 2      # 3초마다 확인, 3번 실패 DOWN, 2번 성공 UP
+    server a1 10.10.0.121:80 check             # 거점 A app-01
+    server a2 10.10.0.122:80 check             # 거점 A app-02
+    server b1 10.20.0.121:80 check             # 거점 B
+    server c1 10.30.0.121:80 check             # 거점 C
+    # server burst <AWS burst 주소>:80 check backup  # 2순위: AWS (나중에)
+    server local 127.0.0.1:8080 check backup   # 3순위: 점검 페이지
+
+listen stats
+    bind 127.0.0.1:8404                        # 서버 안에서만 보이는 상태 페이지
+    stats enable
+    stats uri /
 CFG
 systemctl restart haproxy
+
+# --- Tailscale ---
+curl -fsSL https://tailscale.com/install.sh | sh
+snap install aws-cli --classic
+
+set +x                                         # 키가 로그에 찍히지 않게
+TS_KEY=$(aws ssm get-parameter --region ap-northeast-2 \
+  --name /jammy/tailscale/edge-authkey --with-decryption \
+  --query Parameter.Value --output text)
+tailscale up --authkey "$TS_KEY" --hostname jammy-edge-a \
+  --advertise-tags=tag:edge --accept-routes
+unset TS_KEY
+set -x
