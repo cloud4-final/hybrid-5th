@@ -2,7 +2,8 @@
 
 > 상태: **계획 초안 / 현장 접근·설치·Gemini 리뷰 미실행**. 절대 완료 표시 금지.
 > 대상: `jammy-a`, `jammy-b`, `jammy-c` 및 `jammy-obs` (Tailscale).
-> 구현 기준: 최신 Confluence의 **KVM/libvirt + 독립 k3s**. GitHub README의 OpenStack 표기 불일치를 Phase 0에서 해소한다.
+> 구현 기준: **OpenStack 미사용**, 각 거점 **Ubuntu + KVM/libvirt + 독립 k3s**. README도 해당 기준으로 수정.
+> 최신 사용자 시나리오(2026-11-04): **A 최초 Writer, B/C 읽기·데이터 반출. A 중단 시 승인된 B 승격, 이후 B 중단 시 승인된 C 승격. 현재 Writer가 살아 있는 동안 다른 Replica 단독 장애는 Writer 전환 사유가 아님. S3는 WAL/Backup 및 데이터 Export 목적이며 실시간 쓰기 Primary가 아님.**
 > 고정 요구: Prometheus, Grafana, Loki, Istio, OpenTelemetry, Kiali, Tempo, Grafana Alloy, Blackbox Exporter, Alertmanager.
 
 ## 0. 기술적 목표와 원칙
@@ -30,6 +31,71 @@
 - Kiali 단일 설치가 세 독립 Mesh를 자동 통합하지 않는다. 우선 사이트별 Kiali 설치 후 Grafana Canvas에서 3개 사이트를 묶고 Kiali deep link를 제공한다. 나중에 단일 multi-cluster mesh로 합치는 것은 별도 네트워크·서비스 ID·인증·CNI 검증 프로젝트.
 - 독립된 관측 서버가 죽어도 사이트 측 Prometheus TSDB와 일부 로컬 로그 버퍼가 남게 한다. Prometheus remote_write가 장시간 허브 장애 뒤 모든 샘플을 자동 재전송한다고 가정 금지; 재전송 보존 시간 및 복구 테스트 필수.
 - CloudWatch 경유 AWS SQS/CloudFront/EC2 메트릭·로그는 최소 권한으로 API를 통해 연동. 임의 public scrape 금지.
+
+
+## 2-A. 필수: DB Role / 데이터 반출 / S3 동적 상태 모델
+
+이 문서는 물리 사이트와 DB Runtime Role을 **절대 동일하게 취급하지 않는다**. `site=a|b|c`는 안정된 식별자이고, `db_role=primary|standby|unknown`는 **DB 질의로 실측하는 변화 가능한 상태**다. `site=a,role=writer` 같은 영구 고정 구성·대시보드 필터는 금지한다. 장애 감지/승격 자동 실행은 모니터링과 독립된 통제된 절차다.
+
+| 장애 단계 | A | B | C | AWS S3 | 운영 원칙 |
+|---|---|---|---|---|---|
+| 정상 | Primary + 수집/조회 | Read Replica + 조회/Export | Read Replica + 조회/Export | 주기적 Backup/WAL Archive + 완료 Export 파일 | 모든 앱 요청은 논리 Writer Endpoint로 기록. 읽기는 최신성 조건을 확인 |
+| B만 중단 | Primary 유지 | Down | Read Replica + 조회/Export | Backup/WAL/Export 지속 여부 확인 | **C는 승격하지 않음**. B 장애는 Replica 장애 |
+| C만 중단 | Primary 유지 | Read Replica | Down | Backup/WAL/Export 상태 확인 | A Primary 유지, B 조회·반출 용량 제한 검증 |
+| A 중단 | 격리/Fencing 필요 | 후보→**승인 후** Primary | B에서 WAL 수신하도록 변경, 조회/Export | 수집 보존(SQS 별개), Backup/WAL/Export 구분 | 입력 쓰기 보류/영속 보관 후 데이터 손실 위험 평가·Fencing·승격·Writer Endpoint 전환 |
+| A 중단 상태에서 B도 중단 | Down | 격리/Fencing 필요 | 후보→**승인 후** Primary | 복구 데이터 원천·아카이브 제공 (PostgreSQL Primary 아님) | 마지막 C 단독 운영, 용량 축소·접속 안전성·미복제 WAL 확인. Fencing/승격 안전성 증명 불가 시 쓰기 중지 |
+| A/B 복귀 | 재동기화 후 Standby 후보 | 재동기화 후 Standby 후보 | 현재 Primary 유지(예시) | 별도 복구/정합성 검증 | 돌아온 과거 Primary를 자동 재승격하지 않음; timeline/LSN 비교, pg_rewind 또는 Base Backup 수행 |
+| 네트워크 분할 또는 관측 허브 단절 | 실제 상태 확인 필요 | 실제 상태 확인 필요 | 실제 상태 확인 필요 | 연결 상태 별도 Probe | 장애로 추정해 자동 승격 금지. 현상=Unknown과 Down, Primary 가능성, 이중 쓰기 위험을 구분 |
+
+**위 상태표는 목표/가정이며 실제 DB 전환 자동화 완료를 뜻하지 않는다.** C를 직계 Replica로 둘지 B 경유 Cascading Replica로 둘지는 WAN 대역폭/지연·Failover 운영 비용으로 결정한다. PostgreSQL은 cascading replication을 지원한다. A→B/C와 A→B→C의 Replication Lag, 각 링크 전송량, 승격 후 재지정 시간·실제 DB 최신성을 시험한다.
+
+### DB 원본 상태 발견 및 경보
+
+- 각 PostgreSQL 인스턴스는 `postgres_exporter` + 제한된 권한의 커스텀 SQL 메트릭으로 **실제** `pg_is_in_recovery()`(Primary vs Standby), `pg_stat_replication`(Sender), `pg_stat_wal_receiver`(Receiver), WAL 수신·재생 LSN, timestamp 기반 lag, `pg_stat_archiver`를 수집한다. 특정 확장/Exporter 버전에서 수집 가능한 기본 메트릭과 별도 쿼리는 설치 시 검증.
+- `pg_is_in_recovery()=false`인 관측 가능한 인스턴스가 0개면 **Writable Primary Unconfirmed**, 2개 이상이면 **Multiple Primary Suspected (critical)**. 원본이 관측 불가인 경우에도 다른 데이터·격리 확인 없이 안전하다고 주장하지 않는다.
+- 의도한 Writer Endpoint 대상과 DB가 실제로 밝히는 Primary 역할을 비교해 **Writer Endpoint Drift** 및 오래된 접속 풀을 경고한다. Endpoint 전환은 DB 승격 승인 이후 수행되며 DB 접속 권한은 Active Writer만 부여하도록 통제.
+- Runtime 상태 전이 이벤트(standby→primary), promotion 승인자, fencing 증거, WAL timeline, 연결 Endpoint 변경, 앱 재접속, C downstream 재연결을 변경 이벤트로 Loki에 기록한다. Grafana에는 **현재 Writer**, **후보(승격 전)**, **전환 중**, **관측 불가**를 별도로 표시한다.
+- Alert 상태는 전환 작업 중 의도된 지연을 Silence/Change Window와 연결하되, 실제 Multiple-Primary·백업 실패 등 Critical은 무조건 숨기지 않는다.
+- 2개 거점이 동시에 끊겨 중앙에서 확인할 수 없는 상황은 **자동 승격 권한의 근거가 아님**. Observability는 Failover Decision Support이지, 임의의 리더 선출기가 아니다.
+
+### 데이터 반출(조회·Export) 관측
+
+- B/C는 읽기와 데이터 반출을 주로 담당한다. `query_api` p95/p99, rows/s, DB Replica Lag, stale-read 차단/허용, Export job queue/processing time, 객체 크기, checksum, 결과 버전, 실패·재시도, S3 업로드 bytes/seconds 및 오류를 수집한다.
+- 큰 파일은 거점 서버가 외부 사용자에게 직접 스트리밍하는 대신 **Export Worker→S3 게시→CloudFront 사용자 다운로드**를 기본 비교 구조로 사용한다. 사이트 B/C의 Wi-Fi 업로드 회선과 사용자 CloudFront 다운로드 회선은 독립된 경로로 표시. 첫 게시 지연과 CDN cache hit를 구분한다.
+- B 승격 시 B는 쓰기 및 기존 조회/Export 부하를 겸한다. 과부하 보호 규칙에 따라 비필수 Export 동시성을 줄이고 C가 허용 freshness 내 조회/Export를 더 담당하는 **degradation policy**를 검증한다. C 승격 후에는 Export/분석을 더 축소한다.
+
+### S3: 복제·Backup·Archive·Export 역할 구분
+
+- **PostgreSQL Streaming Replica**: A/B/C PostgreSQL 사이 WAL을 전달하고 조회 가능한 Standby를 유지하는 서비스 연속성 수단.
+- **pgBackRest→S3 Base Backup + WAL Archive**: 복원/PITR에 필요한 데이터의 오프사이트 보호. 실시간 읽기 DB가 아니라 복구 저장소. `last_backup_success`, `last_backup_age`, `last_archive_success`, `failed_archive_count`, S3 접근 가능성, Repo 용량·보존, 별도 환경 복원 시험으로 검증.
+- **Export Snapshot→S3(+CloudFront)**: 외부 사용자가 다운로드할 수 있는 정제 데이터 파일. DB 백업과 구별된 Bucket/Prefix·권한·보존 정책 사용. Content version/checksum 검증. S3로 WAL을 보냈다고 실시간 복제나 0-RPO 달성을 주장하지 않는다.
+- A와 B가 동시에 불능일 때 C의 최신 WAL·아카이브 유효성을 확인한 뒤에만 C를 승격할 수 있다. S3 저장이 끊겨 있거나 미복제 이벤트가 있는 경우 RPO 범위를 명시한다.
+
+### 역할 변화에 강한 대시보드/Discovery
+
+- 물리명 `jammy-a/b/c`, 거점 라벨 `site`, DB `system_identifier`/현재 timeline 등의 **실제 객체 ID**는 식별자로 유지. `primary_site`, `replication_upstream`, `allowed_export_sites`는 현재 상태와 승인된 운영 정책에서 동적으로 조회한다.
+- 대시보드의 '현재 Primary'는 정적 A 패널이 아니라 현재 Primary로 확인되는 DB 인스턴스를 강조한다. 그래프의 WAL 엣지(A→B/C→B→C)는 DB Receiver/Replay 관측에 따라 갱신한다. 물리 Link 방향·수신/송신 Bandwidth는 시간축으로 표시한다.
+- Prometheus Label은 사이트/인스턴스처럼 안정된 식별 위주로 유지하고, Rapidly changing `request_id`, `event_id`, PID 등을 메트릭 라벨에 넣지 않는다. Role 변동은 상태 메트릭과 이벤트 로그로 표현하여 타임시리즈 폭증을 방지한다.
+- 신규/삭제 VM·Pod/Service가 등장하면 SD로 대상 목록을 갱신하지만, **업무상 이 서비스가 Writer를 참조해야 하는지/Read Replica를 참조해야 하는지**는 선언된 앱 계약과 현재 상태에 따라 결정한다. 서비스 생성만으로 임의 DB 쓰기 권한을 부여하지 않는다.
+
+### 필수 드릴 추가
+
+| ID | 드릴 | 관측 합격 기준 |
+|---|---|---|
+| F01 | B만 장애(A 정상) | A Primary 유지, C Read Replica 확인, B 조회/Export 배제, DB 불필요한 승격 없음 |
+| F02 | A 장애→B 승격 | A Fencing·B role 전환·C upstream 변경·Writer Endpoint drift 검사, 누락/중복·RTO/RPO 및 AWS 큐 보관 증거 |
+| F03 | A 장애 후 B 연속 장애→C 승격 | C의 Writer 전환 가능성·정합성·백업 최신성·서비스 축소, 확실한 Fencing 없으면 fail-closed |
+| F04 | 전환 후 A/B 재합류 | Old Writer가 Read Only 상태로 복구, 재동기화/timeline, Archive 및 DB 정합성 검증 |
+| F05 | B/C 대용량 Export + WAN 포화 | Query p95, export queue, replica lag, file transfer throughput, CDN 결과 비교 및 Priority/Concurrency 보호 |
+| F06 | S3 접근 불가/복원 실패 | 기존 DB 조회와 S3 Archive 실패를 분리, 백업 보호 상태 알림, 외부 복원 경로 검증 |
+| F07 | A와 B에 동시에 Primary가 떠 있는 격리 시험 | 외부 인입 쓰기 차단·Critical 경보, 접근 제한된 격리 네트워크에서만 시험, 서비스 정합성/복원 검증 |
+
+### 설계 근거
+
+- PostgreSQL Failover/Fencing: https://www.postgresql.org/docs/current/warm-standby-failover.html
+- PostgreSQL Streaming/Cascading Replica: https://www.postgresql.org/docs/current/warm-standby.html
+- PostgreSQL Statistics: https://www.postgresql.org/docs/current/monitoring-stats.html
+- pgBackRest S3 / Backup: https://pgbackrest.org/user-guide.html
 
 ## 3. 이름·접근·허브 이동 정책
 
@@ -84,7 +150,7 @@
 2. Network Path: 방향별 RTT/loss, host Wi-Fi RSSI, Tailscale direct/DERP, tailscale0/br-vm/wlan per-interface Mbps, TCP retrans, nftables drops, AWS HAProxy.
 3. Resource Drilldown: Host→VM→Node→Pod→Container CPU/memory/disk/network.
 4. Service/Trace: Istio/Kiali local mesh graphs, OpenTelemetry exemplars, Tempo span waterfall, Loki correlated logs.
-5. Data Reliability: PostgreSQL role/lag, ACK(DB committed vs queue accepted), event backlog, duplicate/loss verification.
+5. Data Reliability: **A→B→C 순차 Writer 승격 실시간 타임라인**, 실제 Primary/Replica 역할, Writer Endpoint, WAL upstream/lag, ACK(DB committed vs queue accepted), S3 Archive/Backup과 Export 상태, event backlog, duplicate/loss verification.
 6. Observability Health: NoData vs Failure, collector backlog, WAL status, logs/trace ingestion, hub storage and independent heartbeat.
 
 ## 8. 검증 필수 시나리오와 완료 기준
@@ -166,6 +232,7 @@ agy --version
 
 ## 현재 실행 상태
 
+- [x] OpenStack 제거 / 순차 A→B→C Writer 역할 변화 시나리오를 계획에 반영
 - [x] 기존 설계/Repo 부분 조회
 - [x] 공식 문서 기반 설계 초안
 - [ ] jammy-* 원격 진단
