@@ -124,11 +124,16 @@
 ```bash
 agy models
 agy --version
-agy -p "/effort" --output-format json
-agy -p "Read observability/IMPLEMENTATION_PLAN.md. Act as a senior SRE reviewer. Check design gaps, security boundaries, site/VM/K8s discovery, telemetry completeness, budgets, failover and observability failure. Output BLOCKING/MAJOR/MINOR, precise fixes and test cases. Do not edit files." --model gemini-3.8-flash-high --effort high > Review-Agy-PLAN.md
+# 사용 가능한 Gemini 모델 ID, effort 옵션 및 비대화형 프롬프트 옵션은
+# 로컬 'agy --help' 및 'agy models' 출력에서 먼저 확인한다.
+# 확인된 옵션으로 다음 리뷰 프롬프트를 실행한다.
+# "Read observability/IMPLEMENTATION_PLAN.md. Act as a senior SRE reviewer.
+# Check design gaps, security, discovery, telemetry completeness, capacity,
+# failure handling and testability. Output BLOCKING/MAJOR/MINOR. Do not edit files."
+# 실제 실행 후 stdout/stderr, 모델 ID, 종료코드, 리뷰 결과를 보존한다.
 ```
 
-`gemini-3.8-flash-high`는 Antigravity CLI 문서상 모델 slug다. 실제 지원 여부는 `agy models` 출력으로 확인하고, 없으면 다른 모델로 조용히 대체하지 않는다. 리뷰 후 수정한 계획에 대해 재리뷰. 개별 diff는 파일별 read-only snapshot을 입력해 같은 모델로 리뷰한다. 병렬 실행은 `agy`가 실행되는 사용자의 Antigravity/agent orchestrator 환경에서만 수행하며 이 문서 생성이 실행 증거는 아니다.
+요청하신 **Gemini 3.8 High의 실제 모델 식별자와 agy CLI 지원 여부는 미확인**이다. `agy --help`와 `agy models`를 통해 확인하고, 없으면 다른 모델로 조용히 대체하지 않는다. 리뷰 후 수정한 계획에 대해 재리뷰. 개별 diff는 파일별 read-only snapshot을 입력해 같은 모델로 리뷰한다. 병렬 실행은 `agy`가 실행되는 사용자의 Antigravity/agent orchestrator 환경에서만 수행하며 이 문서 생성이 실행 증거는 아니다.
 
 ## 10. 구현 순서와 Gate
 
