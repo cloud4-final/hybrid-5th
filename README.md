@@ -1,15 +1,16 @@
 # hybrid-5th
 
-3거점 온프레미스(OpenStack + k3s)와 AWS를 잇는 하이브리드 클라우드 프로젝트
+3거점 온프레미스(Ubuntu + KVM/libvirt + 독립 k3s)와 AWS를 잇는 하이브리드 클라우드 프로젝트
 
 ## 폴더 구조
 | 폴더 | 내용 |
 |---|---|
 | infra/aws | AWS 리소스 Terraform (입구, Route 53, S3·CloudFront, burst) |
-| infra/openstack | 거점 OpenStack·VM 구성 |
+| infra/openstack | 과거 예약 디렉터리(미사용, 정리 예정). **OpenStack 사용하지 않음** |
+| infra/kvm (예정) | KVM/libvirt, cloud-init, Ansible 기반 Host·VM 자동화 |
 | k8s | 쿠버네티스 매니페스트 |
 | apps | 조회·수집 API |
-| observability | Prometheus·Grafana·Loki·Alertmanager |
+| observability | Prometheus·Grafana·Loki·Istio·OTel·Kiali·Tempo·Alloy·Blackbox·Alertmanager 및 자동 발견/DB 승격 관측 계획 |
 | loadtest | k6 시나리오, 이벤트 생성기 |
 | docs/adr | 설계 결정 기록 |
 
@@ -21,4 +22,4 @@
 `종류: 내용` — feat(기능), fix(수정), docs(문서), chore(설정·정리), refactor(구조 개선)
 
 ## 금지
-- AWS 키, `*.tfstate`, `*.tfvars`, kubeconfig 커밋 금지# hybrid-5th
+- AWS 키, `*.tfstate`, `*.tfvars`, kubeconfig 커밋 금지
