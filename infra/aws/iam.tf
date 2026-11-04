@@ -35,7 +35,7 @@ resource "aws_iam_role_policy" "edge_read_tskey" {
     Statement = [{
       Effect   = "Allow"
       Action   = "ssm:GetParameter"
-      Resource = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/jammy/tailscale/edge-authkey"
+      Resource = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/jammy/tailscale/edge-authkey-*"
     }]
   })
 }

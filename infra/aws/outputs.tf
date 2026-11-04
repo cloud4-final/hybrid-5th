@@ -6,6 +6,6 @@ output "public_subnet_ids" {
   value = { for k, s in aws_subnet.public : k => s.id }
 }
 
-output "edge_a_public_ip" {
-  value = aws_eip.edge_a.public_ip
+output "edge_public_ips" {
+  value = { for k, e in aws_eip.edge : k => e.public_ip } # { a = "...", c = "..." }
 }
