@@ -30,21 +30,33 @@
 
 본인의 파트(예: K8s 매니페스트, AI 모델 서빙, OS 프로비저닝 스크립트 등)에 대한 CI를 추가하고 싶을 때는 `.github/workflows/ci.yml` 파일에서 다음 3곳만 수정하면 됩니다.
 
-### [1단계] 경로 필터 등록 (`detect-changes` Job)
-`with.filters` 항목 아래에 본인 파트의 식별자와 감시할 디렉토리 경로를 추가합니다.
+### [1단계] 경로 필터 및 출력 등록 (`detect-changes` Job)
+`detect-changes` Job의 `outputs`와 `with.filters` 항목 아래에 본인 파트의 식별자와 감시할 디렉토리 경로를 추가합니다.
 
 ```yaml
 # .github/workflows/ci.yml
 jobs:
   detect-changes:
-    ...
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      k8s: ${{ steps.filter.outputs.k8s }}               # <--- 1) 출력 등록
     steps:
+      - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
+        id: filter
         with:
           filters: |
-            # 기존 필터들...
-            my_part:
-              - 'k8s/**'     # 본인 파트 디렉토리
+            terraform:
+              - 'infra/aws/**'
+            scripts:
+              - 'scripts/**'
+              - 'infra/aws/userdata/**'
+              - '**/*.sh'
+            k8s:                                         # <--- 2) 경로 필터 추가
+              - 'k8s/**'
 ```
 
 ### [2단계] 파트 검증 Job 작성
@@ -54,7 +66,7 @@ jobs:
   validate-k8s:
     name: Validate Kubernetes Manifests
     needs: detect-changes
-    if: needs.detect-changes.outputs.my_part == 'true'
+    if: needs.detect-changes.outputs.k8s == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,11 +78,12 @@ jobs:
 
 ### [3단계] `ci-gate`의 의존성(`needs`)에 등록
 PR 필수 체크가 정상 통과되도록 `ci-gate`의 `needs` 목록에 작성한 Job 이름을 추가합니다.
+`ci-gate`는 `toJSON(needs)` 기반으로 모든 의존 Job의 상태를 자동 요약 및 평가하므로, 스크립트 수정 없이 `needs` 목록에만 추가하면 자동으로 품질 게이트에 반영됩니다.
 
 ```yaml
   ci-gate:
     name: CI Quality Gate
-    needs: [detect-changes, lint-scripts, lint-terraform, validate-k8s] # <--- 추가
+    needs: [detect-changes, lint-scripts, lint-terraform, validate-k8s] # <--- needs에만 추가하면 자동 반영
     if: always()
     ...
 ```
@@ -90,13 +103,14 @@ terraform validate
 ```
 
 ### 4-2. Shell 스크립트 (네트워크 / 온프레미스 파트)
+> ※ `infra/aws/userdata/edge.sh.tftpl`은 Terraform 템플릿 파일이므로 직접 정적 분석 대상이 아닙니다. `scripts/*.sh` 등 실제 존재하는 셸 스크립트를 대상으로 검증합니다.
+
 ```bash
 # 기본 문법 체크
-bash -n scripts/setup.sh
-bash -n infra/aws/userdata/edge.sh
+bash -n scripts/*.sh
 
 # shellcheck이 설치된 경우
-shellcheck scripts/*.sh infra/aws/userdata/*.sh
+shellcheck scripts/*.sh
 ```
 
 ---

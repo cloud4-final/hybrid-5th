@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -32,8 +35,6 @@ jobs:
               - 'scripts/**'
               - 'infra/aws/userdata/**'
               - '**/*.sh'
-            k8s:
-              - 'k8s/**'
 
   lint-scripts:
     name: Lint Shell Scripts
@@ -85,25 +86,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate Job Results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           echo "=== CI Job Status Summary ==="
-          echo "detect-changes: ${{ needs.detect-changes.result }}"
-          echo "lint-scripts:   ${{ needs.lint-scripts.result }}"
-          echo "lint-terraform: ${{ needs.lint-terraform.result }}"
+          echo "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
 
-          FAILED_JOBS=""
-          for job in "detect-changes:${{ needs.detect-changes.result }}" \
-                     "lint-scripts:${{ needs.lint-scripts.result }}" \
-                     "lint-terraform:${{ needs.lint-terraform.result }}"; do
-            name="${job%%:*}"
-            status="${job##*:}"
-            if [ "$status" = "failure" ] || [ "$status" = "cancelled" ]; then
-              FAILED_JOBS="$FAILED_JOBS $name($status)"
-            fi
-          done
+          FAILED_JOBS=$(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key)(\(.value.result))"' | tr '\n' ' ' | xargs)
 
           if [ -n "$FAILED_JOBS" ]; then
-            echo "❌ CI Quality Gate Failed! Failed jobs:$FAILED_JOBS"
+            echo "❌ CI Quality Gate Failed! Failed jobs: $FAILED_JOBS"
             exit 1
           fi
 
