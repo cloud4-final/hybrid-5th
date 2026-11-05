@@ -1,0 +1,54 @@
+# GitHub 신분증을 믿는다는 협약
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  tags           = { Component = "ci" }
+}
+
+# 누가 출입증을 받을 수 있나: 우리 저장소의 PR만
+data "aws_iam_policy_document" "gha_plan_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:cloud4-final/hybrid-5th:pull_request"]
+    }
+  }
+}
+
+resource "aws_iam_role" "gha_plan" {
+  name                 = "jammy-gha-plan"
+  assume_role_policy   = data.aws_iam_policy_document.gha_plan_trust.json
+  max_session_duration = 3600 # 1시간
+  tags                 = { Component = "ci" }
+}
+
+# 할 수 있는 일 1: 전부 읽기 (plan용)
+resource "aws_iam_role_policy_attachment" "gha_plan_read" {
+  role       = aws_iam_role.gha_plan.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+# 할 수 있는 일 2: tfstate 잠금 파일만 쓰기
+resource "aws_iam_role_policy" "gha_plan_lock" {
+  name = "tfstate-lock"
+  role = aws_iam_role.gha_plan.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:DeleteObject"]
+      Resource = "arn:aws:s3:::jammy-hybrid-tfstate-2026/aws/terraform.tfstate.tflock"
+    }]
+  })
+}

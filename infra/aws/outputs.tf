@@ -9,3 +9,7 @@ output "public_subnet_ids" {
 output "edge_public_ips" {
   value = { for k, e in aws_eip.edge : k => e.public_ip } # { a = "...", c = "..." }
 }
+
+output "gha_plan_role_arn" {
+  value = aws_iam_role.gha_plan.arn
+}
