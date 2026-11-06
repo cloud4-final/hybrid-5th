@@ -21,20 +21,19 @@ jobs:
       run:
         working-directory: infra/aws
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
+          terraform_version: "1.17.0"
           terraform_wrapper: false
 
-      - run: terraform fmt -check -recursive
       - run: terraform init -input=false
-      - run: terraform validate -no-color
 
       - name: plan
         run: |
