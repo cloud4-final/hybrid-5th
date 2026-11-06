@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   plan:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -41,6 +42,6 @@ jobs:
           {
             echo '### terraform plan'
             echo '```'
-            terraform show -no-color tfplan | grep -E '^  # |Plan:|No changes'
+            terraform show -no-color tfplan | grep -E '^  # |Plan:|No changes|Changes to Outputs' || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
